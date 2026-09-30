@@ -46,20 +46,88 @@ def _wrap_text(draw, text: str, font, max_width: int) -> str:
     return "\n".join(lines)
 
 
+TELUGU_RE = re.compile(r"[\u0C00-\u0C7F]")
+LATIN_FONT_FILES = [
+    os.environ.get("CAPTION_LATIN_FONT_FILE", ""),
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+]
+
+
+def _load_latin_font(size: int):
+    for path in LATIN_FONT_FILES:
+        if path and os.path.isfile(path):
+            try:
+                return ImageFont.truetype(path, size, layout_engine=ImageFont.Layout.RAQM)
+            except Exception:
+                continue
+    return _load_font(size)
+
+
+def _split_script_runs(text: str):
+    """Split a line into (run_text, is_telugu) so each run renders with a font
+    that actually covers its script (Noto Sans Telugu has no Latin letters)."""
+    runs, cur, cur_te = [], "", None
+    for ch in text:
+        te = bool(TELUGU_RE.match(ch))
+        if cur_te is None or te == cur_te:
+            cur += ch
+            cur_te = te
+        else:
+            runs.append((cur, cur_te))
+            cur = ch
+            cur_te = te
+    if cur:
+        runs.append((cur, cur_te))
+    return runs
+
+
 def _render_caption_image(text: str, max_width: int, fontsize: int):
-    font = _load_font(fontsize)
-    probe = Image.new("RGBA", (10, 10))
-    d = ImageDraw.Draw(probe)
-    wrapped = _wrap_text(d, text, font, max_width)
-    bbox = d.multiline_textbbox((0, 0), wrapped, font=font, spacing=12, align="center", stroke_width=2)
-    w, h = int(bbox[2] - bbox[0]), int(bbox[3] - bbox[1])
+    font_te = _load_font(fontsize)
+    font_la = _load_latin_font(fontsize)
+
+    def run_font(is_te):
+        return font_te if is_te else font_la
+
+    def width_of(t: str) -> float:
+        probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+        return sum(probe.textlength(r, font=run_font(te)) for r, te in _split_script_runs(t))
+
+    # word wrap by measured mixed-script width
+    words = text.split()
+    lines, cur = [], ""
+    for w in words:
+        trial = (cur + " " + w).strip()
+        if not cur or width_of(trial) <= max_width:
+            cur = trial
+        else:
+            lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+
+    # per-line metrics (baseline-aligned across the two fonts)
+    asc_te, desc_te = font_te.getmetrics()
+    asc_la, desc_la = font_la.getmetrics()
+    ascent, descent = max(asc_te, asc_la), max(desc_te, desc_la)
+    spacing = 12
+    line_h = ascent + descent
+    total_h = line_h * len(lines) + spacing * (len(lines) - 1)
+    total_w = int(max(width_of(l) for l in lines)) if lines else 0
     pad = 14
-    img = Image.new("RGBA", (w + pad * 2, h + pad * 2), (0, 0, 0, 0))
-    d2 = ImageDraw.Draw(img)
-    d2.multiline_text(
-        (int(pad - bbox[0]), int(pad - bbox[1])), wrapped, font=font, fill="white",
-        spacing=12, align="center", stroke_width=2, stroke_fill="black",
-    )
+    stroke = 2
+    img = Image.new("RGBA", (total_w + pad * 2 + stroke * 4, total_h + pad * 2 + stroke * 4), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    y = pad + stroke * 2
+    for line in lines:
+        lw = width_of(line)
+        x = pad + stroke * 2 + (total_w - lw) / 2
+        baseline = y + ascent
+        for run_text, is_te in _split_script_runs(line):
+            f = run_font(is_te)
+            d.text((x, baseline), run_text, font=f, fill="white", anchor="ls",
+                   stroke_width=stroke, stroke_fill="black")
+            x += d.textlength(run_text, font=f)
+        y += line_h + spacing
     return img
 IMAGE_DURATION = 3.0
 CAPTION_Y = TARGET_H - 600
