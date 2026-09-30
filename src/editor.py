@@ -6,12 +6,61 @@ from moviepy.editor import (
     concatenate_videoclips, CompositeAudioClip, ImageClip,
     concatenate_audioclips, ColorClip,
 )
+import numpy as np
 import PIL.Image
+from PIL import Image, ImageDraw, ImageFont
 if not hasattr(PIL.Image, "ANTIALIAS"):
     PIL.Image.ANTIALIAS = PIL.Image.LANCZOS
 
 TARGET_W, TARGET_H = 1080, 1920
-FONT = "DejaVu-Sans-Bold"
+FONT_FILES = [
+    os.environ.get("CAPTION_FONT_FILE", ""),
+    "/usr/share/fonts/truetype/noto/NotoSansTelugu-Bold.ttf",
+    os.path.expanduser("~/.fonts/NotoSansTelugu-Bold.ttf"),
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+]
+
+
+def _load_font(size: int):
+    for path in FONT_FILES:
+        if path and os.path.isfile(path):
+            try:
+                return ImageFont.truetype(path, size, layout_engine=ImageFont.Layout.RAQM)
+            except Exception:
+                continue
+    return ImageFont.load_default()
+
+
+def _wrap_text(draw, text: str, font, max_width: int) -> str:
+    words = text.split()
+    lines, cur = [], ""
+    for w in words:
+        trial = (cur + " " + w).strip()
+        if not cur or draw.textlength(trial, font=font) <= max_width:
+            cur = trial
+        else:
+            lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return "\n".join(lines)
+
+
+def _render_caption_image(text: str, max_width: int, fontsize: int):
+    font = _load_font(fontsize)
+    probe = Image.new("RGBA", (10, 10))
+    d = ImageDraw.Draw(probe)
+    wrapped = _wrap_text(d, text, font, max_width)
+    bbox = d.multiline_textbbox((0, 0), wrapped, font=font, spacing=12, align="center", stroke_width=2)
+    w, h = int(bbox[2] - bbox[0]), int(bbox[3] - bbox[1])
+    pad = 14
+    img = Image.new("RGBA", (w + pad * 2, h + pad * 2), (0, 0, 0, 0))
+    d2 = ImageDraw.Draw(img)
+    d2.multiline_text(
+        (int(pad - bbox[0]), int(pad - bbox[1])), wrapped, font=font, fill="white",
+        spacing=12, align="center", stroke_width=2, stroke_fill="black",
+    )
+    return img
 IMAGE_DURATION = 3.0
 CAPTION_Y = TARGET_H - 600
 
@@ -78,11 +127,10 @@ def _interleave(video_clips: list, image_clips: list) -> list:
 
 
 def _make_caption(text: str, start: float, dur: float):
-    txt = TextClip(
-        text, fontsize=60, color="white", font=FONT,
-        size=(TARGET_W - 200, None), method="caption", align="center",
-        stroke_color="black", stroke_width=2,
-    )
+    # PIL + libraqm renders complex scripts (e.g. Telugu) with correct shaping,
+    # unlike ImageMagick TextClip which breaks conjunct glyphs.
+    img = _render_caption_image(text, TARGET_W - 200, 60)
+    txt = ImageClip(np.array(img), transparent=True)
     txt_w, txt_h = txt.size
     bg_box = ColorClip(size=(txt_w + 40, txt_h + 20), color=(0, 0, 0))
     bg_box = bg_box.set_opacity(0.7)
