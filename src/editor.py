@@ -131,14 +131,17 @@ def _make_caption(text: str, start: float, dur: float):
     # unlike ImageMagick TextClip which breaks conjunct glyphs.
     img = _render_caption_image(text, TARGET_W - 200, 60)
     txt = ImageClip(np.array(img), transparent=True)
-    txt_w, txt_h = txt.size
-    bg_box = ColorClip(size=(txt_w + 40, txt_h + 20), color=(0, 0, 0))
-    bg_box = bg_box.set_opacity(0.7)
-    bg_box = bg_box.set_position(("center", CAPTION_Y - 10))
-    txt = txt.set_position(("center", CAPTION_Y))
-    caption = CompositeVideoClip([bg_box, txt], size=(TARGET_W, TARGET_H))
-    caption = caption.set_start(start).set_duration(dur)
-    return caption
+    txt_w, txt_h = int(txt.size[0]), int(txt.size[1])
+    box_w, box_h = txt_w + 40, txt_h + 20
+    bg_box = ColorClip(size=(box_w, box_h), color=(0, 0, 0))
+    bg_box = bg_box.set_opacity(0.7).set_position(("center", "center"))
+    txt = txt.set_position(("center", "center"))
+    # Small positioned box (not a full-frame layer) - identical look, far less
+    # memory per frame when compositing many captions.
+    box = CompositeVideoClip([bg_box, txt], size=(box_w, box_h))
+    box = box.set_position(("center", CAPTION_Y - 10))
+    box = box.set_start(start).set_duration(dur)
+    return box
 
 
 class VideoEditor:
